@@ -238,7 +238,10 @@ def watch_and_wait():
 
     while threading.active_count() > 0:
         sleep(0.5)
-        print('X: '+ str(joyX) +'\tY: ' + str(joyY) + '\tThreads: '+str(threading.active_count()))
+
+        print('In Hex: X: '+ dec2hex(joyX, 2) +'\tY: ' + dec2hex(joyY, 2))
+
+        print('In Dec: X: '+ str(joyX) +'\tY: ' + str(joyY) + '\tThreads: '+str(threading.active_count()))
 
 def kill_rnet_threads():
     global rnet_threads_running
