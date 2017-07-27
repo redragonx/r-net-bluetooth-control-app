@@ -14,14 +14,8 @@ import threading
 from can2RNET import *
 
 help_msg = '''i-rnet chair server. This server acts as the main controller for
-           the i-rnet phone app. You must provide a bluetooth device address
-           as a required argument.\n
+           the i-rnet phone app. '''
 
-           Example:
-           %(prog)s 00:00:00:00:00:00 '''
-
-# parser = argparse.ArgumentParser(description=help_msg)
-# parser.add_argument("addr", action="store", type=str)
 
 joyX = 0
 joyY = 0
@@ -103,6 +97,35 @@ def main():
     bluetooth_main_server = irnet.IrnetBluetoothServer()
     bluetooth_chair_sock, bluetooth_chair_sock_info = bluetooth_main_server.run_bluetooth_setup()
 
+    parser = argparse.ArgumentParser(description=help_msg)
+    parser.add_argument("bt", action="store", type=str)
+    args = parser.parse_args()
+
+    print (args.bt)
+
+    if args.bt.lower() == "test":
+        bt_test(bluetooth_chair_sock, bluetooth_chair_sock_info)
+    else:
+        chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info)
+
+
+def bt_test(bluetooth_chair_sock, bluetooth_chair_sock_info):
+    print(bluetooth_chair_sock_info)
+
+    if bluetooth_chair_sock is None:
+        bluetooth_chair_sock.close()
+        print("Found no bluetooth device")
+
+    bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_joystick, args=(bluetooth_chair_sock, ), daemon=True)
+    bluetooth_joystick_thread.start()
+
+    watch_and_wait()
+
+    bluetooth_chair_sock.close()
+    print("all done")
+
+
+def chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info):
     # open can socket
     can_socket = opencansocket(0)
 
@@ -140,6 +163,7 @@ def main():
 
     bluetooth_chair_sock.close()
     print("all done")
+
 
 def send_joystick_canframe(s, joy_id):
     mintime = .01
@@ -214,7 +238,7 @@ def watch_and_wait():
 
     while threading.active_count() > 0:
         sleep(0.5)
-        print('X: '+dec2hex(joyX,2)+'\tY: '+dec2hex(joyY,2)+ '\tThreads: '+str(threading.active_count()))
+        print('X: '+ str(joyX) +'\tY: ' + str(joyY) + '\tThreads: '+str(threading.active_count()))
 
 def kill_rnet_threads():
     global rnet_threads_running
