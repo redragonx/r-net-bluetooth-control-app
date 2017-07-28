@@ -16,9 +16,17 @@ from can2RNET import *
 help_msg = '''i-rnet chair server. This server acts as the main controller for
            the i-rnet phone app. '''
 
+parser = argparse.ArgumentParser(description=help_msg)
+parser.add_argument("--test", help="Test mode for bluetooth apps", action="store_true")
+args = parser.parse_args()
 
 joyX = 0
 joyY = 0
+
+STX = 2
+ETX = 3
+
+
 
 def dec2hex(dec, hexlen):  # convert dec to hex with leading 0s and no '0x'
     h = hex(int(dec))[2:]
@@ -30,49 +38,115 @@ def dec2hex(dec, hexlen):  # convert dec to hex with leading 0s and no '0x'
     return ('0' * hexlen + h)[l:l + hexlen]
 
 
-def read_bluetooth_joystick(bluetooth_chair_sock):
+def valid_dataframe(raw_data):
+    global STX
+    global ETX
+
+    if len(raw_data) < 2:
+        return False
+
+    first_byte = int(raw_data[0])
+    second_byte = int(raw_data[len(raw_data) - 1])
+
+    if (raw_data[0] == STX) and (raw_data[len(raw_data) - 1] == ETX):
+        # print ("True")
+        return True
+
+    return False
+
+
+def read_move_dataframe(raw_data):
 
     global joyX
     global joyY
 
+    #print(str(len(data)))
+
+    # <STX  "Joy_X + 200"  "Joy_Y + 200"  ETX>
+    # STX stands for an 0x02 byte
+    # ETX is the byte 0x03
+
+    # the "Joy_X + 200" stands for an integer value in ASCII,
+    # so e.g. 300 is the bytes "300" (0x33 0x30 0x30)
+    joyX = (raw_data[1] - 48) * 100 + \
+            (raw_data[2] - 48) * 10 + (raw_data[3] - 48)
+    joyY = (raw_data[4] - 48) * 100 + \
+            (raw_data[5] - 48) * 10 + (raw_data[6] - 48)
+
+    # all the values are exactly 3 decimal digits so that its
+    # unambiguous (thats why 200 is added)
+
+    # we need to subtract 200 afterwards...
+    joyX = joyX - 200
+    joyY = joyY - 200
+
+    # this maps (-100 to 100) to be
+    # (1, (128 center, but in our case 0 is center), 255)
+    # as defined in Linux gamepad kernel api
+    joyX = 0x100 + int(joyX * 255) >> 8 & 0xFF
+    joyY = 0x100 - int(joyY * 255) >> 8 & 0xFF
+
+    if joyX == 1:
+        joyX = 0
+    if joyY == 1:
+        joyY = 0
+
+def read_button_dataframe(raw_data, can_socket):
+
+    button = chr(raw_data[1])
+    print(button)
+
+    if button == 'A': # on
+        print("horn")
+        cansend(can_socket,"0C040101#")
+        cansend(can_socket,"0C040100#")
+    if button == 'B': # off
+        cansend(can_socket,"0C040101#")
+        cansend(can_socket,"0C040100#")
+
+    # Button 2 (Flood lights)
+    if button == 'E':
+        cansend(can_socket, "0C000404#")
+    if button == 'F':
+        cansend(can_socket, "0C000404#")
+
+    # Button 3 (Left Blinker)
+    if button == 'C':
+        cansend(can_socket, "0C000401#")
+    if button == 'D':
+        cansend(can_socket, "0C000401#")
+
+    # Button 5 (Right Blinker)
+    if button == 'I':
+        cansend(can_socket, "0C000402#")
+    if button == 'J':
+        cansend(can_socket, "0C000402#")
+
+def read_bluetooth_data(bluetooth_chair_sock, can_socket=''):
+
     if bluetooth_chair_sock == None:
-        print("wtf")
+        print("Unexpected bluetooth socket error")
+
+    global rnet_threads_running
+
 
     try:
         while True:
             data = bluetooth_chair_sock.recv(1024)
-            if len(data) == 0:
-                break
+            data_len = len(data)
 
             # print("received [%s]" % data)
+            if valid_dataframe(data) == False:
+                print ("Bad dataframe")
+                continue
 
-            # <STX  "Joy_X + 200"  "Joy_Y + 200"  ETX>
-            # STX stands for an 0x02 byte
-            # ETX is the byte 0x03
-
-            # the "Joy_X + 200" stands for an integer value in ASCII,
-            # so e.g. 300 is the bytes "300" (0x33 0x30 0x30)
-            joyX = (data[1] - 48) * 100 + \
-                    (data[2] - 48) * 10 + (data[3] - 48)
-            joyY = (data[4] - 48) * 100 + \
-                    (data[5] - 48) * 10 + (data[6] - 48)
-
-            # all the values are exactly 3 decimal digits so that its
-            # unambiguous (thats why 200 is added)
-
-            # we need to subtract 200 afterwards...
-            joyX = joyX - 200
-            joyY = joyY - 200
-
-            # this maps (-100 to 100) to be (1, (128 center), 255)
-            # as defined in Linux gamepad kernel api
-            joyX = 0x100 + int(joyX * 100) >> 8 & 0xFF
-            joyY = 0x100 - int(joyY * 100) >> 8 & 0xFF
-
-            if joyX == 1:
-                joyX = 0
-            if joyY == 1:
-                joyY = 0
+            if data_len == 8:
+                read_move_dataframe(data)
+            elif data_len == 3:
+                if can_socket != '':
+                    read_button_dataframe(data, can_socket)
+            else:
+                continue
 
     except Exception as e:
         print("I/O error({0}): {1}".format(e.errno, e.strerror))
@@ -97,13 +171,7 @@ def main():
     bluetooth_main_server = irnet.IrnetBluetoothServer()
     bluetooth_chair_sock, bluetooth_chair_sock_info = bluetooth_main_server.run_bluetooth_setup()
 
-    parser = argparse.ArgumentParser(description=help_msg)
-    parser.add_argument("bt", action="store", type=str)
-    args = parser.parse_args()
-
-    print (args.bt)
-
-    if args.bt.lower() == "test":
+    if args.test:
         bt_test(bluetooth_chair_sock, bluetooth_chair_sock_info)
     else:
         chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info)
@@ -116,7 +184,7 @@ def bt_test(bluetooth_chair_sock, bluetooth_chair_sock_info):
         bluetooth_chair_sock.close()
         print("Found no bluetooth device")
 
-    bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_joystick, args=(bluetooth_chair_sock, ), daemon=True)
+    bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_data, args=(bluetooth_chair_sock, ), daemon=True)
     bluetooth_joystick_thread.start()
 
     watch_and_wait()
@@ -141,7 +209,7 @@ def chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info):
                 kill_rnet_threads()
                 print("Found no bluetooth device")
 
-        bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_joystick, args=(bluetooth_chair_sock, ), daemon=True)
+        bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_data, args=(bluetooth_chair_sock, can_socket), daemon=True)
         bluetooth_joystick_thread.start()
 
         joy_id = RNET_JSMerror_exploit(can_socket)
@@ -151,9 +219,10 @@ def chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info):
         speed_range = 00
         #RNETsetSpeedRange(can_socket,speed_range)
 
-        sendjoyframethread = threading.Thread(target=send_joystick_canframe,args=(can_socket,joy_id,),daemon=True)
-        sendjoyframethread.start()
-        play_song_thread.start()
+        send_joyframe_thread = threading.Thread(target=send_joystick_canframe,args=(can_socket,joy_id,),daemon=True)
+        send_joyframe_thread.start()
+
+        # play_song_thread.start()
 
         watch_and_wait()
 
