@@ -26,6 +26,7 @@ joyY = 0
 STX = 2
 ETX = 3
 
+can_active = False
 
 
 def dec2hex(dec, hexlen):  # convert dec to hex with leading 0s and no '0x'
@@ -171,67 +172,48 @@ def main():
     bluetooth_main_server = irnet.IrnetBluetoothServer()
     bluetooth_chair_sock, bluetooth_chair_sock_info = bluetooth_main_server.run_bluetooth_setup()
 
-    if args.test:
-        bt_test(bluetooth_chair_sock, bluetooth_chair_sock_info)
-    else:
-        chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info)
-
-
-def bt_test(bluetooth_chair_sock, bluetooth_chair_sock_info):
-    print(bluetooth_chair_sock_info)
-
-    if bluetooth_chair_sock is None:
-        bluetooth_chair_sock.close()
-        print("Found no bluetooth device")
-
-    bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_data, args=(bluetooth_chair_sock, ), daemon=True)
-    bluetooth_joystick_thread.start()
-
-    watch_and_wait()
-
-    bluetooth_chair_sock.close()
-    print("all done")
-
-
-def chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info):
-    # open can socket
     can_socket = opencansocket(0)
 
     if can_socket == '':
         bluetooth_chair_sock.close()
         kill_rnet_threads()
         print ("No can device found!")
-    else:
-        print(bluetooth_chair_sock_info, can_socket)
+        return
+    
+    #print(bluetooth_chair_sock_info, can_socket)
 
-        if bluetooth_chair_sock is None:
-                bluetooth_chair_sock.close()
-                kill_rnet_threads()
-                print("Found no bluetooth device")
+    if bluetooth_chair_sock is None:
+          bluetooth_chair_sock.close()
+          kill_rnet_threads()
+          print("Found no bluetooth device")
+          return
 
-        bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_data, args=(bluetooth_chair_sock, can_socket), daemon=True)
-        bluetooth_joystick_thread.start()
+    bluetooth_joystick_thread = threading.Thread(target=read_bluetooth_data, args=(bluetooth_chair_sock, can_socket), daemon=True)
+    bluetooth_joystick_thread.start()
 
-        joy_id = RNET_JSMerror_exploit(can_socket)
+    while True:
+        chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info, can_socket)
+        rnet_threads_running = False
+        print("Waiting 5 seconds before restarting canbus activity")
+        sleep(5)
+        rnet_threads_running = True
 
-        play_song_thread = threading.Thread(target=RNETplaysong,args=(can_socket,),daemon = True)
 
-        speed_range = 00
-        #RNETsetSpeedRange(can_socket,speed_range)
+def chair_mode(bluetooth_chair_sock, bluetooth_chair_sock_info, can_socket):
+    joy_id = RNET_JSMerror_exploit(can_socket)
+    play_song_thread = threading.Thread(target=RNETplaysong,args=(can_socket,),daemon = True)
 
-        send_joyframe_thread = threading.Thread(target=send_joystick_canframe,args=(can_socket,joy_id,),daemon=True)
-        send_joyframe_thread.start()
+    speed_range = 00
+    send_joyframe_thread = threading.Thread(target=send_joystick_canframe,args=(can_socket,joy_id,),daemon=True)
+    send_joyframe_thread.start()
 
-        # play_song_thread.start()
+    play_song_thread.start()
 
-        watch_and_wait()
+    watch_and_wait(can_socket)
 
-    print("disconnected")
+    #kill_rnet_threads()
 
-    kill_rnet_threads()
-
-    bluetooth_chair_sock.close()
-    print("all done")
+    #bluetooth_chair_sock.close()
 
 
 def send_joystick_canframe(s, joy_id):
@@ -242,6 +224,7 @@ def send_joystick_canframe(s, joy_id):
 
     while rnet_threads_running:
         joyframe = joy_id + '#' + dec2hex(joyX, 2) + dec2hex(joyY, 2)
+        #print (joyframe) #DEBUG only
         cansend(s, joyframe)
         nexttime += mintime
         t = time()
@@ -255,7 +238,7 @@ def send_joystick_canframe(s, joy_id):
 def wait_joystickframe(cansocket, t):
     frameid = ''
     # just look for joystick frame ID (no extended frame)
-    while frameid[0:3] != '020':
+    while frameid[0:3] != '020' and rnet_threads_running:
         cf, addr = cansocket.recvfrom(16)
         candump_frame = dissect_frame(cf)
         frameid = candump_frame.split('#')[0]
@@ -300,14 +283,28 @@ def RNETplaysong(can_socket):
     sleep(.77)
     cansend(can_socket,"181C0100#105a205b00000000")
 
-def watch_and_wait():
+def read_can(s, read_can_endtime):
+    global can_active
+    while (time()<read_can_endtime) and rnet_threads_running:
+         canwait(s, "03C30F0F:1FFFFFFF")
+         can_active = True
+    
+
+def watch_and_wait(s):
 
     global joyX
     global joyY
-
-    while threading.active_count() > 0:
-        sleep(0.5)
-
+    global can_active
+    watchdoginterval = 1.0
+    while rnet_threads_running:
+        can_active = False
+        read_can_endtime = time() + watchdoginterval
+        read_canTH = threading.Thread(target=read_can,args=(s,read_can_endtime,),daemon=True)
+        read_canTH.start()
+        sleep(watchdoginterval)
+        if can_active == False:
+            print("No activity seen on canbus")
+            kill_rnet_threads()
         print('In Hex: X: '+ dec2hex(joyX, 2) +'\tY: ' + dec2hex(joyY, 2))
 
         print('In Dec: X: '+ str(joyX) +'\tY: ' + str(joyY) + '\tThreads: '+str(threading.active_count()))
